@@ -39,9 +39,7 @@ the master password can be given either directly as `KEEPASS_PASSWORD` or, prefe
 
 ```php
 use vielhuber\keepassmcp\keepassmcp;
-
 $vault = new keepassmcp();
-
 $vault->listEntries();
 $vault->searchEntries('api-key');
 $vault->getEntry('7f9c…');
