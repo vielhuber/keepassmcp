@@ -53,6 +53,27 @@ final class Test extends \PHPUnit\Framework\TestCase
         $this->assertSame('get', $reader->calls[0]['command']);
     }
 
+    public function test__limits_an_entry_to_the_requested_fields(): void
+    {
+        $reader = new FakeReader([
+            'item' => ['uuid' => 'abc', 'title' => 'x', 'path' => 'g/x', 'password' => 's3cret', 'notes' => 'n']
+        ]);
+        $vault = new keepassmcp(database: '/tmp/example.kdbx', password: 'pw', reader: $reader);
+
+        $result = $vault->getEntry('abc', ['notes']);
+
+        $this->assertSame(['uuid', 'title', 'path', 'notes'], array_keys($result['item']));
+        $this->assertArrayNotHasKey('password', $result['item']);
+    }
+
+    public function test__returns_every_field_without_a_selection(): void
+    {
+        $reader = new FakeReader(['item' => ['uuid' => 'abc', 'password' => 's3cret', 'notes' => 'n']]);
+        $vault = new keepassmcp(database: '/tmp/example.kdbx', password: 'pw', reader: $reader);
+
+        $this->assertSame('s3cret', $vault->getEntry('abc')['item']['password']);
+    }
+
     public function test__fails_without_a_configured_database(): void
     {
         $vault = new keepassmcp(database: '', password: 'pw', reader: new FakeReader([]));

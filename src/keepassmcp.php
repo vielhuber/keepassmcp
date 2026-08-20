@@ -131,16 +131,26 @@ final class keepassmcp
      * wanted entry is identified rather than to browse the database.
      *
      * @param string $uuid Entry uuid as returned by list_entries or search_entries
-     * @return array{item: array<string, mixed>} The entry with all of its values
+     * @param array<string> $fields Limit the response to these fields, for example ["notes"]; omit for all of them
+     * @return array{item: array<string, mixed>} The entry with the requested values
      * @throws VaultException If the database cannot be opened or the uuid is unknown.
      */
     #[McpTool(name: 'get_entry')]
-    public function getEntry(string $uuid): array
+    public function getEntry(string $uuid, array $fields = []): array
     {
         if (trim($uuid) === '') {
             throw VaultException::readerFailed('Parameter "uuid" must not be empty.');
         }
-        return $this->call('get', trim($uuid));
+        $result = $this->call('get', trim($uuid));
+        $fields = array_values(array_filter(array_map('trim', array_map('strval', $fields))));
+        if ($fields === [] || !isset($result['item'])) {
+            return $result;
+        }
+        // the identifying fields stay in, they carry nothing confidential and keep
+        // the answer usable without a second lookup
+        $keep = array_merge(['uuid', 'title', 'path'], $fields);
+        $result['item'] = array_intersect_key($result['item'], array_flip($keep));
+        return $result;
     }
 
     private static function passwordFromEnvironment(): string

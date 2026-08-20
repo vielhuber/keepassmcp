@@ -57,7 +57,7 @@ available tools:
 - `search_entries`
 - `get_entry`
 
-`list_entries` and `search_entries` never return a password or a note body; they report titles, group paths, usernames, urls and the flags `has_password` and `has_notes`. `search_entries` does look *inside* notes and custom property names, so long-form documentation stored in an entry stays findable. only `get_entry` returns the confidential values of a single entry.
+`list_entries` and `search_entries` never return a password, a note body or a custom field value; they report titles, group paths, usernames, urls, the names of the custom fields and the flags `has_password` and `has_notes`. `search_entries` does look *inside* notes and inside the names and values of custom fields, so an entry stays findable by a mail address or an account number kept there. only `get_entry` returns the confidential values of a single entry, and its optional `fields` parameter narrows the answer — `["notes"]` returns the notes without the password.
 
 ## tests
 

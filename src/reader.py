@@ -25,6 +25,9 @@ def summary(entry):
         "url": entry.url or "",
         "has_password": (entry.password or "") != "",
         "has_notes": (entry.notes or "") != "",
+        # the names show what an entry carries, so the right field can be asked for
+        # afterwards; the values stay behind get_entry
+        "custom_fields": sorted((entry.custom_properties or {}).keys()),
         "attachments": [attachment.filename for attachment in entry.attachments],
     }
 
@@ -39,7 +42,14 @@ def detail(entry):
 
 
 def matches(entry, query):
-    """Tell whether a query appears anywhere in the entry, notes included."""
+    """Tell whether a query appears anywhere in the entry, values included.
+
+    Custom fields are searched by name and by value: a mail address or an account
+    number often lives there, and an entry that cannot be found by it is of no use.
+    The match only decides *whether* an entry is returned — search results never
+    carry the values themselves.
+    """
+    custom = entry.custom_properties or {}
     haystack = " ".join(
         [
             entry.title or "",
@@ -47,7 +57,8 @@ def matches(entry, query):
             entry.url or "",
             entry.notes or "",
             "/".join(entry.path or []),
-            " ".join((entry.custom_properties or {}).keys()),
+            " ".join(custom.keys()),
+            " ".join(str(value or "") for value in custom.values()),
         ]
     ).lower()
     return query.lower() in haystack
