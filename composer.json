@@ -1,6 +1,6 @@
 {
     "name": "vielhuber/keepassmcp",
-    "description": "PHP helper and MCP server for reading local KeePass databases.",
+    "description": "PHP helper and MCP server for reading and writing KeePass databases.",
     "license": "MIT",
     "require": {
         "php": "^8.5",

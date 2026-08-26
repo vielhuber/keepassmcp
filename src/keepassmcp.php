@@ -22,11 +22,112 @@ final class VaultException extends \RuntimeException
 interface Reader
 {
     /**
-     * Run one read-only command against the database and return its decoded result.
+     * Run one command against the database and return its decoded result.
      *
      * @return array<string, mixed>
      */
     public function read(string $database, string $password, string $command, string $argument = ''): array;
+}
+
+interface DatabaseStorage
+{
+    public function prepare(string $database): string;
+
+    public function commit(string $database, string $materializedDatabase): void;
+
+    public function lockPath(string $database): string;
+}
+
+final class LocalDatabaseStorage implements DatabaseStorage
+{
+    public function prepare(string $database): string
+    {
+        return $database;
+    }
+
+    public function commit(string $database, string $materializedDatabase): void {}
+
+    public function lockPath(string $database): string
+    {
+        return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) .
+            DIRECTORY_SEPARATOR .
+            'keepassmcp-' .
+            hash('sha256', $database) .
+            '.lock';
+    }
+}
+
+final class CommandDatabaseStorage implements DatabaseStorage
+{
+    private ?string $materializedDatabase;
+
+    public function __construct(private readonly string $command, ?string $materializedDatabase = null)
+    {
+        $this->materializedDatabase =
+            $materializedDatabase !== null && trim($materializedDatabase) !== '' ? trim($materializedDatabase) : null;
+    }
+
+    public function prepare(string $database): string
+    {
+        $result = $this->run('prepare', $database);
+        $materializedDatabase = trim((string) ($result['database'] ?? $this->materializedPath($database)));
+        if ($materializedDatabase === '' || !is_file($materializedDatabase)) {
+            throw VaultException::readerFailed('The synchronized KeePass database is unavailable.');
+        }
+        return $materializedDatabase;
+    }
+
+    public function commit(string $database, string $materializedDatabase): void
+    {
+        $this->run('commit', $database, $materializedDatabase);
+    }
+
+    public function lockPath(string $database): string
+    {
+        return $this->materializedPath($database) . '.lock';
+    }
+
+    /** @return array<string, mixed> */
+    private function run(string $operation, string $database, ?string $materializedDatabase = null): array
+    {
+        $process = proc_open(
+            [$this->command, $operation, $database, $materializedDatabase ?? $this->materializedPath($database)],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        if (!is_resource($process)) {
+            throw VaultException::readerFailed('The KeePass storage adapter could not be started.');
+        }
+        fclose($pipes[0]);
+        $output = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $error = trim((string) stream_get_contents($pipes[2]));
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+        $decoded = json_decode(trim($output), true);
+        if ($exitCode !== 0 || !is_array($decoded)) {
+            throw VaultException::readerFailed(
+                'The KeePass storage adapter returned no usable response.' . ($error !== '' ? ' ' . $error : '')
+            );
+        }
+        if (isset($decoded['error'])) {
+            throw VaultException::readerFailed((string) $decoded['error']);
+        }
+        return $decoded;
+    }
+
+    private function materializedPath(string $database): string
+    {
+        if ($this->materializedDatabase !== null) {
+            return $this->materializedDatabase;
+        }
+        $temporaryDirectory = is_dir('/dev/shm') ? '/dev/shm' : sys_get_temp_dir();
+        return rtrim($temporaryDirectory, DIRECTORY_SEPARATOR) .
+            DIRECTORY_SEPARATOR .
+            'keepassmcp-' .
+            hash('sha256', $database) .
+            '.kdbx';
+    }
 }
 
 final class PythonReader implements Reader
@@ -71,8 +172,14 @@ final class keepassmcp
 
     private string $password;
 
-    public function __construct(?string $database = null, ?string $password = null, private ?Reader $reader = null)
-    {
+    private DatabaseStorage $storage;
+
+    public function __construct(
+        ?string $database = null,
+        ?string $password = null,
+        private ?Reader $reader = null,
+        ?DatabaseStorage $storage = null
+    ) {
         $this->database = trim($database ?? (string) getenv('KEEPASS_DATABASE'));
         // a password file is preferred over the variable: an environment travels
         // into every child process and stays readable in /proc/<pid>/environ,
@@ -85,6 +192,15 @@ final class keepassmcp
                 script: __DIR__ . '/reader.py'
             );
         }
+        $syncCommand = trim((string) getenv('KEEPASS_SYNC_COMMAND'));
+        $this->storage =
+            $storage ??
+            ($syncCommand !== ''
+                ? new CommandDatabaseStorage(
+                    command: $syncCommand,
+                    materializedDatabase: (string) getenv('KEEPASS_LOCAL_DATABASE')
+                )
+                : new LocalDatabaseStorage());
     }
 
     /**
@@ -153,6 +269,99 @@ final class keepassmcp
         return $result;
     }
 
+    /**
+     * Create an entry without returning its confidential values.
+     *
+     * Missing groups in the slash-separated path are created automatically.
+     *
+     * @param array<string, string> $customProperties Additional values stored under their exact field names
+     * @return array{item: array<string, mixed>} The created entry without confidential values
+     */
+    #[McpTool(name: 'create_entry')]
+    public function createEntry(
+        string $title,
+        string $username = '',
+        string $password = '',
+        string $url = '',
+        string $notes = '',
+        string $group = '',
+        array $customProperties = []
+    ): array {
+        if (trim($title) === '') {
+            throw VaultException::readerFailed('Parameter "title" must not be empty.');
+        }
+        return $this->call(
+            'create',
+            json_encode(
+                [
+                    'title' => trim($title),
+                    'username' => $username,
+                    'password' => $password,
+                    'url' => $url,
+                    'notes' => $notes,
+                    'group' => trim($group),
+                    'custom_properties' => $customProperties
+                ],
+                JSON_THROW_ON_ERROR
+            ),
+            true
+        );
+    }
+
+    /**
+     * Update only the supplied fields of an entry and preserve its history.
+     *
+     * A null custom-property value deletes that property. Missing groups in a
+     * supplied slash-separated path are created automatically.
+     *
+     * @param array<string, string|null>|null $customProperties Values to set or delete by exact field name
+     * @return array{item: array<string, mixed>} The updated entry without confidential values
+     */
+    #[McpTool(name: 'update_entry')]
+    public function updateEntry(
+        string $uuid,
+        ?string $title = null,
+        ?string $username = null,
+        ?string $password = null,
+        ?string $url = null,
+        ?string $notes = null,
+        ?string $group = null,
+        ?array $customProperties = null
+    ): array {
+        if (trim($uuid) === '') {
+            throw VaultException::readerFailed('Parameter "uuid" must not be empty.');
+        }
+        $values = [
+            'uuid' => trim($uuid),
+            'title' => $title,
+            'username' => $username,
+            'password' => $password,
+            'url' => $url,
+            'notes' => $notes,
+            'group' => $group,
+            'custom_properties' => $customProperties
+        ];
+        $values = array_filter($values, static fn(mixed $value): bool => $value !== null);
+        if (count($values) === 1) {
+            throw VaultException::readerFailed('At least one field must be supplied for an update.');
+        }
+        return $this->call('update', json_encode($values, JSON_THROW_ON_ERROR), true);
+    }
+
+    /**
+     * Delete one explicitly identified entry without returning its values.
+     *
+     * @return array{deleted: array<string, string>} Identification of the deleted entry
+     */
+    #[McpTool(name: 'delete_entry')]
+    public function deleteEntry(string $uuid): array
+    {
+        if (trim($uuid) === '') {
+            throw VaultException::readerFailed('Parameter "uuid" must not be empty.');
+        }
+        return $this->call('delete', trim($uuid), true);
+    }
+
     private static function passwordFromEnvironment(): string
     {
         $passwordFile = trim((string) getenv('KEEPASS_PASSWORD_FILE'));
@@ -165,7 +374,7 @@ final class keepassmcp
     /**
      * @return array<string, mixed>
      */
-    private function call(string $command, string $argument = ''): array
+    private function call(string $command, string $argument = '', bool $writes = false): array
     {
         if ($this->database === '') {
             throw VaultException::notConfigured('KEEPASS_DATABASE');
@@ -173,6 +382,20 @@ final class keepassmcp
         if ($this->password === '') {
             throw VaultException::notConfigured('KEEPASS_PASSWORD');
         }
-        return $this->reader->read($this->database, $this->password, $command, $argument);
+        $lock = fopen($this->storage->lockPath($this->database), 'c');
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            throw VaultException::readerFailed('The KeePass database lock could not be acquired.');
+        }
+        try {
+            $materializedDatabase = $this->storage->prepare($this->database);
+            $result = $this->reader->read($materializedDatabase, $this->password, $command, $argument);
+            if ($writes) {
+                $this->storage->commit($this->database, $materializedDatabase);
+            }
+            return $result;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 }

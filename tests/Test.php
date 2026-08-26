@@ -113,6 +113,57 @@ final class Test extends \PHPUnit\Framework\TestCase
         putenv('KEEPASS_PASSWORD_FILE');
         unlink($passwordFile);
     }
+
+    public function test__creates_an_entry_and_commits_the_materialized_database(): void
+    {
+        $reader = new FakeReader(['item' => ['uuid' => 'abc', 'title' => 'Example']]);
+        $storage = new FakeStorage('/tmp/materialized.kdbx');
+        $vault = new keepassmcp(database: 'remote://vault.kdbx', password: 'pw', reader: $reader, storage: $storage);
+
+        $result = $vault->createEntry(
+            title: 'Example',
+            username: 'user',
+            password: 'secret',
+            group: 'Customers/Example'
+        );
+
+        $this->assertSame('abc', $result['item']['uuid']);
+        $this->assertSame('create', $reader->calls[0]['command']);
+        $this->assertSame('/tmp/materialized.kdbx', $reader->calls[0]['database']);
+        $this->assertSame(1, $storage->commits);
+        $payload = json_decode($reader->calls[0]['argument'], true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame('Customers/Example', $payload['group']);
+        $this->assertSame('secret', $payload['password']);
+    }
+
+    public function test__updates_only_supplied_fields_and_commits(): void
+    {
+        $reader = new FakeReader(['item' => ['uuid' => 'abc', 'title' => 'Changed']]);
+        $storage = new FakeStorage('/tmp/materialized.kdbx');
+        $vault = new keepassmcp(database: 'remote://vault.kdbx', password: 'pw', reader: $reader, storage: $storage);
+
+        $vault->updateEntry(uuid: 'abc', title: 'Changed', customProperties: ['obsolete' => null]);
+
+        $payload = json_decode($reader->calls[0]['argument'], true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(['uuid', 'title', 'custom_properties'], array_keys($payload));
+        $this->assertNull($payload['custom_properties']['obsolete']);
+        $this->assertSame(1, $storage->commits);
+    }
+
+    public function test__does_not_commit_read_operations(): void
+    {
+        $storage = new FakeStorage('/tmp/materialized.kdbx');
+        $vault = new keepassmcp(
+            database: 'remote://vault.kdbx',
+            password: 'pw',
+            reader: new FakeReader(['count' => 0, 'items' => []]),
+            storage: $storage
+        );
+
+        $vault->listEntries();
+
+        $this->assertSame(0, $storage->commits);
+    }
 }
 
 final class FakeReader implements Reader
@@ -134,5 +185,27 @@ final class FakeReader implements Reader
             'argument' => $argument
         ];
         return $this->result;
+    }
+}
+
+final class FakeStorage implements \vielhuber\keepassmcp\DatabaseStorage
+{
+    public int $commits = 0;
+
+    public function __construct(private readonly string $database) {}
+
+    public function prepare(string $database): string
+    {
+        return $this->database;
+    }
+
+    public function commit(string $database, string $materializedDatabase): void
+    {
+        $this->commits++;
+    }
+
+    public function lockPath(string $database): string
+    {
+        return sys_get_temp_dir() . '/keepassmcp-test-' . hash('sha256', $database) . '.lock';
     }
 }

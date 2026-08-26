@@ -8,9 +8,7 @@
 
 # 🔐keepassmcp🔐
 
-keepassmcp is a PHP helper and MCP server that reads a local KeePass database — entries, notes, custom properties and passwords.
-
-it is read-only by design: nothing in the database is ever written or changed.
+keepassmcp is a PHP helper and MCP server that reads and writes KeePass databases — entries, notes, custom properties and passwords.
 
 keepassmcp requires PHP 8.5 or newer and Python 3 with [pykeepass](https://pypi.org/project/pykeepass/). the decryption itself is delegated to pykeepass because no PHP library reads KDBX 4.x reliably; every KDBX variant, including Argon2 key derivation, is therefore supported.
 
@@ -56,8 +54,15 @@ available tools:
 - `list_entries`
 - `search_entries`
 - `get_entry`
+- `create_entry`
+- `update_entry`
+- `delete_entry`
 
-`list_entries` and `search_entries` never return a password, a note body or a custom field value; they report titles, group paths, usernames, urls, the names of the custom fields and the flags `has_password` and `has_notes`. `search_entries` does look *inside* notes and inside the names and values of custom fields, so an entry stays findable by a mail address or an account number kept there. only `get_entry` returns the confidential values of a single entry, and its optional `fields` parameter narrows the answer — `["notes"]` returns the notes without the password.
+`list_entries` and `search_entries` never return a password, a note body or a custom field value; they report titles, group paths, usernames, urls, the names of the custom fields and the flags `has_password` and `has_notes`. `search_entries` does look _inside_ notes and inside the names and values of custom fields, so an entry stays findable by a mail address or an account number kept there. only `get_entry` returns the confidential values of a single entry, and its optional `fields` parameter narrows the answer — `["notes"]` returns the notes without the password.
+
+write tools never return a password or note body. `create_entry` creates missing groups from its slash-separated `group` path. `update_entry` changes only supplied fields, stores the previous entry in KeePass history and accepts `null` as a custom-property value to delete that property. `delete_entry` requires the exact UUID returned by a list or search call. every local mutation is written to a temporary database and atomically replaces the original only after KeePass has saved it successfully.
+
+remote storage adapters can be connected without coupling keepassmcp to a cloud provider. set `KEEPASS_SYNC_COMMAND` to an executable accepting `prepare|commit`, the configured database identifier and a local materialization path. `prepare` must return `{"database":"/local/file.kdbx"}`; `commit` must persist that file or fail. `KEEPASS_LOCAL_DATABASE` optionally fixes the materialization path. keepassmcp serializes the complete prepare/read-or-write/commit transaction through a local lock.
 
 ## tests
 
