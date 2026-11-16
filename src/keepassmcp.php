@@ -206,9 +206,9 @@ final class keepassmcp
     /**
      * List every entry of the database without any secret value.
      *
-     * Returns titles, group paths, usernames and urls plus the flags `has_password`
-     * and `has_notes`, so an entry can be picked before anything confidential is
-     * requested. The response includes a `count` field with the exact number of
+     * Returns titles, group paths, usernames and urls plus the flags `has_password`,
+     * `has_notes` and `has_totp`, so an entry can be picked before requesting secrets.
+     * The response includes a `count` field with the exact number of
      * entries — use this authoritative value instead of counting the items array.
      *
      * @return array{count: int, items: array<mixed>} Envelope with `count` and `items` (the entries, without secrets)
@@ -243,8 +243,7 @@ final class keepassmcp
     /**
      * Read one entry completely, including its password, notes and custom properties.
      *
-     * This is the only tool that returns confidential values, so call it once the
-     * wanted entry is identified rather than to browse the database.
+     * Call this once the wanted entry is identified rather than to browse the database.
      *
      * @param string $uuid Entry uuid as returned by list_entries or search_entries
      * @param array<string> $fields Limit the response to these fields, for example ["notes"]; omit for all of them
@@ -267,6 +266,25 @@ final class keepassmcp
         $keep = array_merge(['uuid', 'title', 'path'], $fields);
         $result['item'] = array_intersect_key($result['item'], array_flip($keep));
         return $result;
+    }
+
+    /**
+     * Generate the current code from an entry's existing KeePassXC TOTP configuration.
+     *
+     * Returns only entry identification, the code and its expiry, never the shared secret.
+     * Use search_entries first to identify the entry; has_totp indicates stored OTP settings.
+     *
+     * @param string $uuid Entry uuid as returned by list_entries or search_entries
+     * @return array{item: array{uuid: string, title: string, path: string, totp: string, valid_until: int, remaining_seconds: int}}
+     * @throws VaultException If the entry has no supported TOTP configuration or cannot be read.
+     */
+    #[McpTool(name: 'get_totp')]
+    public function getTotp(string $uuid): array
+    {
+        if (trim($uuid) === '') {
+            throw VaultException::readerFailed('Parameter "uuid" must not be empty.');
+        }
+        return $this->call('totp', trim($uuid));
     }
 
     /**

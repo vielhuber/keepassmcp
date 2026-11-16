@@ -5,15 +5,20 @@ library reads KDBX 4.x reliably, while pykeepass covers every variant including
 Argon2 key derivation.
 
 The database password arrives on stdin so it never appears in a process
-argument. Commands: "list", "search", "get", "create", "update", "delete".
+argument. Commands: "list", "search", "get", "totp", "create", "update", "delete".
 """
 
 import atexit
+import base64
+import binascii
+import hmac
 import json
 import os
 import shutil
 import sys
 import tempfile
+import time
+from urllib.parse import parse_qs, urlparse
 
 from pykeepass import PyKeePass
 from pykeepass.exceptions import CredentialsError
@@ -29,6 +34,7 @@ def summary(entry):
         "url": entry.url or "",
         "has_password": (entry.password or "") != "",
         "has_notes": (entry.notes or "") != "",
+        "has_totp": bool(entry.otp),
         # the names show what an entry carries, so the right field can be asked for
         # afterwards; the values stay behind get_entry
         "custom_fields": sorted((entry.custom_properties or {}).keys()),
@@ -125,6 +131,45 @@ def main():
     elif command == "get":
         entry = entry_by_uuid(vault, argument)
         print(json.dumps({"item": detail(entry)}))
+        return
+    elif command == "totp":
+        entry = entry_by_uuid(vault, argument)
+        if not entry.otp:
+            raise ValueError("No TOTP is configured for this entry.")
+        try:
+            uri = urlparse(entry.otp)
+            parameters = parse_qs(uri.query, keep_blank_values=True)
+            algorithm = parameters.get("algorithm", ["SHA1"])[0].upper()
+            digits = int(parameters.get("digits", ["6"])[0])
+            period = int(parameters.get("period", ["30"])[0])
+            if (
+                uri.scheme != "otpauth"
+                or uri.netloc != "totp"
+                or algorithm not in {"SHA1", "SHA256", "SHA512"}
+                or not 6 <= digits <= 8
+                or period <= 0
+                or parameters.get("encoder", ["default"])[0] != "default"
+            ):
+                raise ValueError
+            secret = "".join(parameters.get("secret", [""])[0].split()).upper().rstrip("=")
+            if not secret:
+                raise ValueError
+            key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+        except (ValueError, binascii.Error):
+            raise ValueError("The entry has an invalid or unsupported TOTP configuration.") from None
+        timestamp = int(time.time())
+        counter = timestamp // period
+        digest = hmac.digest(key, counter.to_bytes(8, "big"), algorithm.lower())
+        offset = digest[-1] & 15
+        value = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+        print(json.dumps({"item": {
+            "uuid": str(entry.uuid),
+            "title": entry.title or "",
+            "path": "/".join(entry.path or []),
+            "totp": str(value % (10 ** digits)).zfill(digits),
+            "valid_until": (counter + 1) * period,
+            "remaining_seconds": period - timestamp % period,
+        }}))
         return
     elif command == "create":
         values = json.loads(argument)

@@ -41,6 +41,7 @@ $vault = new keepassmcp();
 $vault->listEntries();
 $vault->searchEntries('api-key');
 $vault->getEntry('7f9c…');
+$vault->getTotp('7f9c…');
 ```
 
 ## MCP server
@@ -54,11 +55,14 @@ available tools:
 - `list_entries`
 - `search_entries`
 - `get_entry`
+- `get_totp`
 - `create_entry`
 - `update_entry`
 - `delete_entry`
 
-`list_entries` and `search_entries` never return a password, a note body or a custom field value; they report titles, group paths, usernames, urls, the names of the custom fields and the flags `has_password` and `has_notes`. `search_entries` does look _inside_ notes and inside the names and values of custom fields, so an entry stays findable by a mail address or an account number kept there. only `get_entry` returns the confidential values of a single entry, and its optional `fields` parameter narrows the answer — `["notes"]` returns the notes without the password.
+`list_entries` and `search_entries` never return a password, a note body or a custom field value; they report titles, group paths, usernames, urls, the names of the custom fields and the flags `has_password`, `has_notes` and `has_totp`. `search_entries` does look _inside_ notes and inside the names and values of custom fields, so an entry stays findable by a mail address or an account number kept there. `get_entry` returns the confidential values of a single entry, and its optional `fields` parameter narrows the answer — `["notes"]` returns the notes without the password.
+
+`get_totp(uuid)` generates the current code from an existing KeePassXC `otp` field without changing the database or returning its shared secret. it returns `item` with `uuid`, `title`, `path`, `totp` (a string preserving leading zeroes), `valid_until` (Unix timestamp) and `remaining_seconds`. standard `otpauth://totp/…` configurations support SHA1, SHA256 and SHA512, six to eight digits and the configured period (30 seconds by default). missing, malformed and unsupported settings fail explicitly. the server clock must be synchronized. no additional Python dependency is required.
 
 write tools never return a password or note body. `create_entry` creates missing groups from its slash-separated `group` path. `update_entry` changes only supplied fields, stores the previous entry in KeePass history and accepts `null` as a custom-property value to delete that property. `delete_entry` requires the exact UUID returned by a list or search call. every local mutation is written to a temporary database and atomically replaces the original only after KeePass has saved it successfully.
 
